@@ -29,6 +29,7 @@ DW1000Class DW1000;
 uint8_t DW1000Class::_ss;
 uint8_t DW1000Class::_rst;
 uint8_t DW1000Class::_irq;
+uint8_t DW1000Class::_wakeup;
 
 
 // IRQ callbacks
@@ -69,6 +70,8 @@ uint8_t    DW1000Class::_deviceMode          = IDLE_MODE; // TODO replace by enu
 
 boolean    DW1000Class::_debounceClockEnabled = false;
 
+boolean    DW1000Class::_adcClockEnabled = false;
+
 // modes of operation
 // TODO use enum external, not config array
 // this declaration is needed to make variables accessible while runtime from external code
@@ -98,8 +101,8 @@ const byte DW1000Class::BIAS_900_16[] = {137, 122, 105, 88, 69, 47, 25, 0, 21, 4
 const byte DW1000Class::BIAS_900_64[] = {147, 133, 117, 99, 75, 50, 29, 0, 24, 45, 63, 76, 87, 98, 116, 122, 132, 142};
 */
 // SPI settings
-#ifdef ESP8266
-	// default ESP8266 frequency is 80 Mhz, thus divide by 4 is 20 MHz
+#if defined(ESP8266) || defined(ESP32)
+	// default ESP8266/ESP32 frequency is 80 Mhz, thus divide by 4 is 20 MHz
 	const SPISettings DW1000Class::_fastSPI = SPISettings(20000000L, MSBFIRST, SPI_MODE0);
 #else
 	const SPISettings DW1000Class::_fastSPI = SPISettings(16000000L, MSBFIRST, SPI_MODE0);
@@ -161,19 +164,25 @@ void DW1000Class::reselect(uint8_t ss) {
 	digitalWrite(_ss, HIGH);
 }
 
-void DW1000Class::begin(uint8_t irq, uint8_t rst) {
+void DW1000Class::begin(uint8_t irq, uint8_t rst, uint8_t wakeup) {
+	if(wakeup != 0xff) {
+		pinMode(wakeup, OUTPUT);
+		digitalWrite(wakeup, HIGH);
+	}
+
 	// generous initial init/wake-up-idle delay
 	delay(5);
 	// Configure the IRQ pin as INPUT. Required for correct interrupt setting for ESP8266
     	pinMode(irq, INPUT);
 	// start SPI
 	SPI.begin();
-#ifndef ESP8266
+#if !(defined(ESP8266) || defined(ESP32))
 	SPI.usingInterrupt(digitalPinToInterrupt(irq)); // not every board support this, e.g. ESP8266
 #endif
 	// pin and basic member setup
 	_rst        = rst;
 	_irq        = irq;
+	_wakeup     = wakeup;
 	_deviceMode = IDLE_MODE;
 	// attach interrupt
 	//attachInterrupt(_irq, DW1000Class::handleInterrupt, CHANGE); // todo interrupt for ESP8266
@@ -196,15 +205,15 @@ void DW1000Class::manageLDE() {
 	memset(otpctrl, 0, LEN_OTP_CTRL);
 	readBytes(PMSC, PMSC_CTRL0_SUB, pmscctrl0, LEN_PMSC_CTRL0);
 	readBytes(OTP_IF, OTP_CTRL_SUB, otpctrl, LEN_OTP_CTRL);
-	pmscctrl0[0] = 0x01;
+	pmscctrl0[0] = 0x01; // See "Register accesses required to load LDE microcode" table in user manual
 	pmscctrl0[1] = 0x03;
 	otpctrl[0]   = 0x00;
 	otpctrl[1]   = 0x80;
 	writeBytes(PMSC, PMSC_CTRL0_SUB, pmscctrl0, 2);
 	writeBytes(OTP_IF, OTP_CTRL_SUB, otpctrl, 2);
 	delay(5);
-	pmscctrl0[0] = 0x00;
-	pmscctrl0[1] &= 0x02;
+	pmscctrl0[0] = 0x00; // See same table as above
+	pmscctrl0[1] = 0x02;
 	writeBytes(PMSC, PMSC_CTRL0_SUB, pmscctrl0, 2);
 }
 
@@ -237,7 +246,17 @@ void DW1000Class::enableDebounceClock() {
 	setBit(pmscctrl0, LEN_PMSC_CTRL0, GPDCE_BIT, 1);
 	setBit(pmscctrl0, LEN_PMSC_CTRL0, KHZCLKEN_BIT, 1);
 	writeBytes(PMSC, PMSC_CTRL0_SUB, pmscctrl0, LEN_PMSC_CTRL0);
-        _debounceClockEnabled = true;
+	_debounceClockEnabled = true;
+}
+
+void DW1000Class::enableADCClock() {
+	byte pmscctrl0[LEN_PMSC_CTRL0];
+	memset(pmscctrl0, 0, LEN_PMSC_CTRL0);
+	readBytes(PMSC, PMSC_CTRL0_SUB, pmscctrl0, LEN_PMSC_CTRL0);
+	setBit(pmscctrl0, LEN_PMSC_CTRL0, 9, 1); // Undocumented bit which is by default 1 and must be 1 for ADC to work
+	setBit(pmscctrl0, LEN_PMSC_CTRL0, ADDCE_BIT, 1);
+	writeBytes(PMSC, PMSC_CTRL0_SUB, pmscctrl0, LEN_PMSC_CTRL0);
+	_adcClockEnabled = true;
 }
 
 void DW1000Class::enableLedBlinking() {
@@ -258,7 +277,11 @@ void DW1000Class::setGPIOMode(uint8_t msgp, uint8_t mode) {
 	writeBytes(GPIO_CTRL, GPIO_MODE_SUB, gpiomode, LEN_GPIO_MODE);
 }
 
-void DW1000Class::deepSleep() {
+void DW1000Class::deepSleep(bool spi_wakeup, bool pin_wakeup) {
+	if(pin_wakeup && _wakeup != 0xff) {
+		digitalWrite(_wakeup, LOW);
+	}
+
 	byte aon_wcfg[LEN_AON_WCFG];
 	memset(aon_wcfg, 0, LEN_AON_WCFG);
 	readBytes(AON, AON_WCFG_SUB, aon_wcfg, LEN_AON_WCFG);
@@ -276,8 +299,8 @@ void DW1000Class::deepSleep() {
 	byte aon_cfg0[LEN_AON_CFG0];
 	memset(aon_cfg0, 0, LEN_AON_CFG0);
 	readBytes(AON, AON_CFG0_SUB, aon_cfg0, LEN_AON_CFG0);
-	setBit(aon_cfg0, LEN_AON_CFG0, WAKE_SPI_BIT, true);
-	setBit(aon_cfg0, LEN_AON_CFG0, WAKE_PIN_BIT, true);
+	setBit(aon_cfg0, LEN_AON_CFG0, WAKE_SPI_BIT, spi_wakeup);
+	setBit(aon_cfg0, LEN_AON_CFG0, WAKE_PIN_BIT, pin_wakeup);
 	setBit(aon_cfg0, LEN_AON_CFG0, WAKE_CNT_BIT, false);
 	setBit(aon_cfg0, LEN_AON_CFG0, SLEEP_EN_BIT, true);
 	writeBytes(AON, AON_CFG0_SUB, aon_cfg0, LEN_AON_CFG0);
@@ -291,12 +314,25 @@ void DW1000Class::deepSleep() {
 }
 
 void DW1000Class::spiWakeup(){
-        digitalWrite(_ss, LOW);
-        delay(2);
-        digitalWrite(_ss, HIGH);
-        if (_debounceClockEnabled){
-                DW1000Class::enableDebounceClock();
-        }
+    digitalWrite(_ss, LOW);
+    delay(2);
+    digitalWrite(_ss, HIGH);
+    postWakeup();
+}
+
+void DW1000Class::pinWakeup() {
+	digitalWrite(_wakeup, HIGH);
+	delay(2);
+	postWakeup();
+}
+
+void DW1000Class::postWakeup() {
+	if (_debounceClockEnabled){
+        DW1000Class::enableDebounceClock();
+    }
+	if (_adcClockEnabled) {
+		DW1000Class::enableADCClock();
+	}
 }
 
 
@@ -1100,7 +1136,7 @@ void DW1000Class::useSmartPower(boolean smartPower) {
 	setBit(_syscfg, LEN_SYS_CFG, DIS_STXP_BIT, !smartPower);
 }
 
-DW1000Time DW1000Class::setDelay(const DW1000Time& delay) {
+DW1000Time DW1000Class::setDelay(const DW1000Time& delay, bool absolute) {
 	if(_deviceMode == TX_MODE) {
 		setBit(_sysctrl, LEN_SYS_CTRL, TXDLYS_BIT, true);
 	} else if(_deviceMode == RX_MODE) {
@@ -1111,8 +1147,13 @@ DW1000Time DW1000Class::setDelay(const DW1000Time& delay) {
 	}
 	byte       delayBytes[5];
 	DW1000Time futureTime;
-	getSystemTimestamp(futureTime);
-	futureTime += delay;
+	if(absolute) {
+		futureTime = delay;
+	}
+	else {
+		getSystemTimestamp(futureTime);
+		futureTime += delay;
+	}
 	futureTime.getTimestamp(delayBytes);
 	delayBytes[0] = 0;
 	delayBytes[1] &= 0xFE;

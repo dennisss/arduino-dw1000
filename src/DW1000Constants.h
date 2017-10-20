@@ -264,6 +264,7 @@
 #define LEN_PMSC_CTRL0 4
 #define LEN_PMSC_CTRL1 4
 #define LEN_PMSC_LEDC 4
+#define ADDCE_BIT 10
 #define GPDCE_BIT 18
 #define KHZCLKEN_BIT 23
 #define BLNKEN 8

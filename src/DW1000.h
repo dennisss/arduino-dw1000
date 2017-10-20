@@ -39,16 +39,17 @@
 class DW1000Class {
 public:
 	/* ##### Init ################################################################ */
-	/** 
+	/**
 	Initiates and starts a sessions with one or more DW1000. If rst is not set or value 0xff, a soft resets (i.e. command
 	triggered) are used and it is assumed that no reset line is wired.
-	 
+
 	@param[in] irq The interrupt line/pin that connects the Arduino.
 	@param[in] rst The reset line/pin for hard resets of ICs that connect to the Arduino. Value 0xff means soft reset.
+	@param[in] wakeup The wakeup pin used to optinally return from sleep mode. A value of 0xff means that the pin is not connected.
 	*/
-	static void begin(uint8_t irq, uint8_t rst = 0xff);
-	
-	/** 
+	static void begin(uint8_t irq, uint8_t rst = 0xff, uint8_t wakeup = 0xff);
+
+	/**
 	Selects a specific DW1000 chip for communication. In case of a single DW1000 chip in use
 	this call only needs to be done once at start up, but is still mandatory. Other than a call
 	to `reselect()` this function performs an initial setup of the now-selected chip.
@@ -81,6 +82,11 @@ public:
 	static void enableDebounceClock();
 
 	/**
+	Enable ADC clock used to measure voltage and temperature
+	*/
+	static void enableADCClock();
+
+	/**
 	Enable led blinking feature
 	*/
 	static void enableLedBlinking();
@@ -92,13 +98,20 @@ public:
 
         /**
         Enable deep sleep mode
+
+		*param[in] spi_wakeup enabled
         */
-        static void deepSleep();
+        static void deepSleep(bool spi_wakeup = true, bool pin_wakeup = true);
 
         /**
         Wake-up from deep sleep by toggle chip select pin
         */
         static void spiWakeup();
+
+	/**
+	Wake-up from deep sleep using the wakeup pin
+	*/
+	static void pinWakeup();
 
 	/**
 	Resets all connected or the currently selected DW1000 chip. A hard reset of all chips
@@ -241,7 +254,7 @@ public:
 	static void useSmartPower(boolean smartPower);
 	
 	/* transmit and receive configuration. */
-	static DW1000Time   setDelay(const DW1000Time& delay);
+	static DW1000Time   setDelay(const DW1000Time& delay, bool absolute = false);
 	static void         receivePermanently(boolean val);
 	static void         setData(byte data[], uint16_t n);
 	static void         setData(const String& data);
@@ -343,8 +356,12 @@ public:
 	//convert from char to 4 bits (hexadecimal)
 	static uint8_t nibbleFromChar(char c);
 	static void convertToByte(char string[], byte* eui_byte);
-	
-	// host-initiated reading of temperature and battery voltage
+
+	/**
+	host-initiated reading of temperature and battery voltage
+
+	Note that `enableADCClock()` must be called before using this
+	*/
 	static void getTempAndVbat(float& temp, float& vbat);
 	
 	// transmission/reception bit rate
@@ -417,7 +434,8 @@ public:
 	static uint8_t _ss;
 	static uint8_t _rst;
 	static uint8_t _irq;
-	
+	static uint8_t _wakeup;
+
 	/* callbacks. */
 	static void (* _handleError)(void);
 	static void (* _handleSent)(void);
@@ -461,6 +479,8 @@ public:
 
 	// whether debounce clock is active
 	static boolean _debounceClockEnabled;
+
+	static boolean _adcClockEnabled;
 
 	/* Arduino interrupt handler */
 	static void handleInterrupt();
@@ -517,7 +537,10 @@ public:
 	
 	/* clock management. */
 	static void enableClock(byte clock);
-	
+
+	/* helper for reinitializing non-preserved registers after a wakeup */
+	static void postWakeup();
+
 	/* LDE micro-code management. */
 	static void manageLDE();
 	
